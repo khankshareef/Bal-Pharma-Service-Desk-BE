@@ -69,6 +69,8 @@ public class SecurityConfig {
                         .requestMatchers("/reports/**").authenticated()
                         .requestMatchers("/config/**").authenticated()
                         .requestMatchers("/files/**").permitAll()
+                        .requestMatchers("/socket.io/**").permitAll()
+                        .requestMatchers("/tickets/**").authenticated()
 
                         .anyRequest().authenticated()
                 )

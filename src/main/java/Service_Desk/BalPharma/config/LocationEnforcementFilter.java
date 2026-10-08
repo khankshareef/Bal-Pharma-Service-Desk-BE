@@ -1,5 +1,4 @@
 package Service_Desk.BalPharma.config;
-
 import Service_Desk.BalPharma.auth.entity.AuthEntity;
 import Service_Desk.BalPharma.auth.entity.UnitAssignment;
 import Service_Desk.BalPharma.auth.entity.UserRoleUnit;
@@ -16,7 +15,6 @@ import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
-
 import java.io.IOException;
 import java.util.List;
 import java.util.Set;

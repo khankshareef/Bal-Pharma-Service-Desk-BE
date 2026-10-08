@@ -1,5 +1,4 @@
 package Service_Desk.BalPharma.ticket.service;
-
 import Service_Desk.BalPharma.auth.entity.AuthEntity;
 import Service_Desk.BalPharma.auth.repository.AuthRepository;
 import Service_Desk.BalPharma.category.entity.CategoryEntity;
@@ -13,6 +12,7 @@ import Service_Desk.BalPharma.location.Role;
 import Service_Desk.BalPharma.notification.service.NotificationService;
 import Service_Desk.BalPharma.reopen.entity.TicketReopenEntity;
 import Service_Desk.BalPharma.reopen.repository.TicketReopenRepository;
+import Service_Desk.BalPharma.socket.SocketHandlers;
 import Service_Desk.BalPharma.template.entity.TicketTemplateEntity;
 import Service_Desk.BalPharma.template.repository.TicketTemplateRepository;
 import Service_Desk.BalPharma.ticket.dto.*;
@@ -27,6 +27,7 @@ import Service_Desk.BalPharma.reopen.dto.TicketReopenResponseDto;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Map;
 
 @Service
 @RequiredArgsConstructor
@@ -44,7 +45,7 @@ public class TicketServiceImpl implements TicketService {
     private final TicketReopenRepository reopenRepository;
     private final NotificationService notificationService;
     private final ExecutiveAssignmentService assignmentService;
-
+    private final SocketHandlers socketHandlers;
 
     @Override
     public TicketResponseDto create(CreateTicketDto dto, String employeeId) {
@@ -101,13 +102,23 @@ public class TicketServiceImpl implements TicketService {
 
         TicketEntity saved = ticketRepository.save(t);
 
+        List<Long> execIds = resolveExecutivesForTicket();
+
         notificationService.notifyTicketEvent(
                 saved.getId(),
                 "New Ticket: " + saved.getTicketCode(),
                 creator.getName() + " raised a new ticket: " + saved.getSubject(),
                 "INFO",
                 "TICKET_CREATED",
-                resolveExecutivesForTicket()
+                execIds
+        );
+
+        pushLiveToUsers(
+                execIds,
+                "TICKET_CREATED",
+                saved.getId(),
+                "New Ticket: " + saved.getTicketCode(),
+                creator.getName() + " raised: " + saved.getSubject()
         );
 
         return toResponse(
@@ -115,6 +126,9 @@ public class TicketServiceImpl implements TicketService {
         );
     }
 
+    /* ==================================================================
+     *  READ
+     * ================================================================ */
 
     @Override
     public List<TicketResponseDto> getAll() {
@@ -139,7 +153,6 @@ public class TicketServiceImpl implements TicketService {
                         .orElseThrow(() -> new AuthException("Ticket not found: " + id))
         );
     }
-
 
     @Override
     public TicketResponseDto update(Long id, UpdateTicketDto dto, String employeeId) {
@@ -182,20 +195,29 @@ public class TicketServiceImpl implements TicketService {
 
         TicketEntity saved = ticketRepository.save(t);
 
+        List<Long> execIds = resolveExecutivesForTicket();
+
         notificationService.notifyTicketEvent(
                 saved.getId(),
                 "Ticket " + saved.getTicketCode() + " updated",
                 "The ticket was updated by " + employeeId,
                 "INFO",
                 "TICKET_UPDATED",
-                resolveExecutivesForTicket()
+                execIds
+        );
+
+        pushLiveToUsers(
+                execIds,
+                "TICKET_UPDATED",
+                saved.getId(),
+                "Ticket " + saved.getTicketCode() + " updated",
+                "Updated by " + employeeId
         );
 
         return toResponse(
                 ticketRepository.findByIdWithRelations(saved.getId()).orElse(saved)
         );
     }
-
 
     @Override
     public TicketResponseDto updateStatus(Long id, UpdateTicketStatusDto dto, String employeeId) {
@@ -210,7 +232,6 @@ public class TicketServiceImpl implements TicketService {
             String requested = dto.getStatus().trim().toUpperCase();
             String current = t.getStatus() == null ? "" : t.getStatus().toUpperCase();
 
-            /* guard: cannot close while reopen pending */
             if (("RESOLVED".equals(requested) || "CLOSED".equals(requested))
                     && reopenRepository.existsByTicketIdAndStatus(id, "PENDING")) {
                 throw new AuthException(
@@ -218,7 +239,6 @@ public class TicketServiceImpl implements TicketService {
                                 " while a reopen request is pending.");
             }
 
-            /* RESOLVE: only assigned executive or manager */
             if ("RESOLVED".equals(requested)) {
                 if (!"IN_PROGRESS".equals(current) && !"OPEN".equals(current)) {
                     throw new AuthException(
@@ -238,7 +258,6 @@ public class TicketServiceImpl implements TicketService {
                 if (t.getResolvedAt() == null) t.setResolvedAt(LocalDateTime.now());
             }
 
-            /* CLOSE: only the ticket creator */
             else if ("CLOSED".equals(requested)) {
                 if (!"RESOLVED".equals(current)) {
                     throw new AuthException(
@@ -278,6 +297,31 @@ public class TicketServiceImpl implements TicketService {
                         "TICKET_" + requested,
                         t.getId()
                 );
+
+                socketHandlers.emitToUser(
+                        t.getCreatedBy().getId(),
+                        "notification",
+                        Map.of(
+                                "type", "STATUS_" + requested,
+                                "ticketId", t.getId(),
+                                "title", "Ticket " + t.getTicketCode() + " — " + requested,
+                                "message", msg
+                        )
+                );
+            }
+
+            if (t.getAssignedTo() != null
+                    && !t.getAssignedTo().getId().equals(actor.getId())) {
+                socketHandlers.emitToUser(
+                        t.getAssignedTo().getId(),
+                        "notification",
+                        Map.of(
+                                "type", "STATUS_" + requested,
+                                "ticketId", t.getId(),
+                                "title", t.getTicketCode() + " status → " + requested,
+                                "message", "Ticket you are handling was marked " + requested
+                        )
+                );
             }
         }
 
@@ -296,7 +340,6 @@ public class TicketServiceImpl implements TicketService {
                 ticketRepository.findByIdWithRelations(saved.getId()).orElse(saved)
         );
     }
-
 
     @Override
     public TicketResponseDto assignTicket(Long id, AssignTicketDto dto, String assignedByEmployeeId) {
@@ -344,6 +387,17 @@ public class TicketServiceImpl implements TicketService {
                 saved.getId()
         );
 
+        socketHandlers.emitToUser(
+                assigned.getId(),
+                "notification",
+                Map.of(
+                        "type", "TICKET_ASSIGNED",
+                        "ticketId", saved.getId(),
+                        "title", "Ticket Assigned: " + saved.getTicketCode(),
+                        "message", "You have been assigned: " + saved.getSubject()
+                )
+        );
+
         if (saved.getCreatedBy() != null) {
             notificationService.notifyUser(
                     saved.getCreatedBy().getId(),
@@ -354,13 +408,23 @@ public class TicketServiceImpl implements TicketService {
                     "TICKET_ASSIGNED",
                     saved.getId()
             );
+
+            socketHandlers.emitToUser(
+                    saved.getCreatedBy().getId(),
+                    "notification",
+                    Map.of(
+                            "type", "TICKET_ASSIGNED",
+                            "ticketId", saved.getId(),
+                            "title", "Ticket " + saved.getTicketCode() + " in progress",
+                            "message", "Assigned to " + assigned.getName()
+                    )
+            );
         }
 
         return toResponse(
                 ticketRepository.findByIdWithRelations(saved.getId()).orElse(saved)
         );
     }
-
 
     @Override
     public TicketReopenResponseDto requestReopen(
@@ -374,20 +438,17 @@ public class TicketServiceImpl implements TicketService {
         AuthEntity requester = authRepository.findByEmployeeId(employeeId)
                 .orElseThrow(() -> new AuthException("Employee not found"));
 
-        /* only RESOLVED or CLOSED tickets can be reopened */
         String status = t.getStatus() == null ? "" : t.getStatus().toUpperCase();
         if (!"RESOLVED".equals(status) && !"CLOSED".equals(status)) {
             throw new AuthException(
                     "Only RESOLVED or CLOSED tickets can be reopened. Current: " + status);
         }
 
-        /* only the ticket creator */
         if (t.getCreatedBy() == null ||
                 !t.getCreatedBy().getId().equals(requester.getId())) {
             throw new AuthException("Only the ticket creator can request a reopen.");
         }
 
-        /* enforce the 24-hour window */
         LocalDateTime anchor = "CLOSED".equals(status)
                 ? t.getClosedAt()
                 : t.getResolvedAt();
@@ -401,12 +462,10 @@ public class TicketServiceImpl implements TicketService {
                             + REOPEN_WINDOW_HOURS + " hours of resolution/closure.");
         }
 
-        /* prevent duplicate PENDING reopen */
         if (reopenRepository.existsByTicketIdAndStatus(ticketId, "PENDING")) {
             throw new AuthException("A reopen request is already pending for this ticket.");
         }
 
-        /* create the reopen record */
         TicketReopenEntity r = new TicketReopenEntity();
         r.setTicket(t);
         r.setRequestedBy(requester);
@@ -415,18 +474,27 @@ public class TicketServiceImpl implements TicketService {
 
         TicketReopenEntity saved = reopenRepository.save(r);
 
+        List<Long> execIds = resolveExecutivesForTicket();
+
         notificationService.notifyTicketEvent(
                 t.getId(),
                 "Reopen requested for " + t.getTicketCode(),
                 requester.getName() + " wants to reopen: " + dto.getReason(),
                 "INFO",
                 "TICKET_REOPEN_REQUESTED",
-                resolveExecutivesForTicket()
+                execIds
+        );
+
+        pushLiveToUsers(
+                execIds,
+                "TICKET_REOPEN_REQUESTED",
+                t.getId(),
+                "Reopen requested: " + t.getTicketCode(),
+                requester.getName() + " wants to reopen the ticket"
         );
 
         return TicketReopenResponseDto.from(saved);
     }
-
 
     @Override
     public List<TicketResponseDto> getAssignedToExecutive(String employeeId) {
@@ -447,14 +515,12 @@ public class TicketServiceImpl implements TicketService {
                 .toList();
     }
 
-
     @Override
     public void delete(Long id) {
         if (!ticketRepository.existsById(id))
             throw new AuthException("Ticket not found: " + id);
         ticketRepository.deleteById(id);
     }
-
 
     @Override
     public SlaDashboardDto getSlaDashboard(String employeeId) {
@@ -523,17 +589,29 @@ public class TicketServiceImpl implements TicketService {
         );
     }
 
+    private void pushLiveToUsers(List<Long> userIds,
+                                 String type,
+                                 Long ticketId,
+                                 String title,
+                                 String message) {
+        if (userIds == null || userIds.isEmpty()) return;
+        Map<String, Object> payload = Map.of(
+                "type", type,
+                "ticketId", ticketId,
+                "title", title,
+                "message", message
+        );
+        for (Long uid : userIds) {
+            socketHandlers.emitToUser(uid, "notification", payload);
+        }
+    }
 
     private List<Long> resolveExecutivesForTicket() {
         List<AuthEntity> all = authRepository.findAll();
-        List<Long> execIds = all.stream()
+        return all.stream()
                 .filter(u -> u.hasAnyRole(Role.EXECUTIVE, Role.SUPER_MANAGER))
                 .map(AuthEntity::getId)
                 .toList();
-
-        System.out.println(">>> Total users: " + all.size());
-        System.out.println(">>> Executives: " + execIds);
-        return execIds;
     }
 
     private TicketResponseDto toResponse(TicketEntity t) {
