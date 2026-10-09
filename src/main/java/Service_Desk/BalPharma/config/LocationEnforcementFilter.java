@@ -1,4 +1,5 @@
 package Service_Desk.BalPharma.config;
+
 import Service_Desk.BalPharma.auth.entity.AuthEntity;
 import Service_Desk.BalPharma.auth.entity.UnitAssignment;
 import Service_Desk.BalPharma.auth.entity.UserRoleUnit;
@@ -14,7 +15,9 @@ import org.springframework.security.core.Authentication;
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.stereotype.Component;
+import org.springframework.util.AntPathMatcher;
 import org.springframework.web.filter.OncePerRequestFilter;
+
 import java.io.IOException;
 import java.util.List;
 import java.util.Set;
@@ -32,9 +35,17 @@ public class LocationEnforcementFilter extends OncePerRequestFilter {
             "/auth/roles-for-user",
             "/auth/change-password",
             "/auth/me",
-            "/files/",
+            "/files/**",
+            "/socket.io/**",
+            "/ws/**",
             "/error"
     );
+
+    private static final AntPathMatcher MATCHER = new AntPathMatcher();
+
+    private boolean isBypassed(String path) {
+        return BYPASS.stream().anyMatch(p -> MATCHER.match(p, path));
+    }
 
     @Override
     protected void doFilterInternal(HttpServletRequest req,
@@ -42,9 +53,13 @@ public class LocationEnforcementFilter extends OncePerRequestFilter {
                                     FilterChain chain)
             throws ServletException, IOException {
 
-        String path = req.getRequestURI();
+        if ("OPTIONS".equalsIgnoreCase(req.getMethod())) {
+            chain.doFilter(req, res);
+            return;
+        }
 
-        if (BYPASS.stream().anyMatch(path::startsWith)) {
+        String path = req.getRequestURI();
+        if (isBypassed(path)) {
             chain.doFilter(req, res);
             return;
         }

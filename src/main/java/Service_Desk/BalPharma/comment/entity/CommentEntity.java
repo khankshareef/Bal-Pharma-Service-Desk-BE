@@ -5,7 +5,7 @@ import Service_Desk.BalPharma.ticket.entity.TicketEntity;
 import jakarta.persistence.*;
 import lombok.*;
 
-import java.time.LocalDateTime;
+import java.time.Instant;
 
 @Entity
 @Table(name = "ticket_comments")
@@ -30,11 +30,11 @@ public class CommentEntity {
     @Column(nullable = false, length = 4000)
     private String body;
 
-    @Column(name = "created_at", nullable = false)
-    private LocalDateTime createdAt;
+    @Column(name = "created_at", nullable = false, updatable = false)
+    private Instant createdAt;
 
     @PrePersist
     void onCreate() {
-        if (createdAt == null) createdAt = LocalDateTime.now();
+        if (createdAt == null) createdAt = Instant.now();
     }
 }

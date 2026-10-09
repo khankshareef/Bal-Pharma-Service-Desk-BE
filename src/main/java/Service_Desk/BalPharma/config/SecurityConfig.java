@@ -58,7 +58,6 @@ public class SecurityConfig {
                                 "/error"
                         ).permitAll()
 
-                        // ---- public reference data (still JWT-less for now) ----
                         .requestMatchers("/units/**").permitAll()
                         .requestMatchers("/departments/**").permitAll()
                         .requestMatchers("/categories/**").permitAll()

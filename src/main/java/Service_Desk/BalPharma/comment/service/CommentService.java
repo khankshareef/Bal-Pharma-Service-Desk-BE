@@ -13,12 +13,20 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
 public class CommentService {
+
+    private static final ZoneId DEFAULT_ZONE = ZoneId.of("Asia/Kolkata");
 
     private final CommentRepository commentRepository;
     private final TicketRepository ticketRepository;
@@ -48,21 +56,40 @@ public class CommentService {
         System.out.println(">>> addComment reached, broadcasting for ticket " + ticketId);
 
         try {
+            // 1) broadcast raw comment so every open ticket page updates live
             System.out.println(">>> Broadcasting ticket:comment for ticket " + ticketId);
             socketHandlers.broadcast("ticket:comment", dto);
 
-            if (ticket.getCreatedBy() != null
-                    && !ticket.getCreatedBy().getId().equals(authorId)) {
-                socketHandlers.emitToUser(
-                        ticket.getCreatedBy().getId(),
-                        "notification",
-                        Map.of(
-                                "type", "COMMENT",
-                                "ticketId", ticketId,
-                                "title", "New comment on " + ticket.getTicketCode(),
-                                "message", author.getName() + ": " + body
-                        )
-                );
+            // 2) notify BOTH creator and assignee (skip author)
+            Set<Long> recipients = new HashSet<>();
+            if (ticket.getCreatedBy() != null)
+                recipients.add(ticket.getCreatedBy().getId());
+            if (ticket.getAssignedTo() != null)
+                recipients.add(ticket.getAssignedTo().getId());
+            recipients.remove(authorId); // never notify the author
+
+            if (!recipients.isEmpty()) {
+                String preview = body.length() > 90
+                        ? body.substring(0, 90) + "…"
+                        : body;
+
+                for (Long uid : recipients) {
+                    Map<String, Object> payload = new HashMap<>();
+                    payload.put("id", "comment-" + saved.getId() + "-" + uid);
+                    payload.put("type", "COMMENT");
+                    payload.put("ticketId", ticketId);
+                    payload.put("ticketCode", ticket.getTicketCode());
+                    payload.put("title", "New comment on " + ticket.getTicketCode());
+                    payload.put("message", author.getName() + ": " + preview);
+                    payload.put("source",
+                            author.hasAnyRole(Service_Desk.BalPharma.location.Role.EXECUTIVE)
+                                    ? "EXECUTIVE" : "USER");
+                    payload.put("createdAt", dto.getCreatedAt());
+
+                    System.out.println(
+                            ">>> Notifying user " + uid + " about comment " + saved.getId());
+                    socketHandlers.emitToUser(uid, "notification", payload);
+                }
             }
         } catch (Exception e) {
             System.err.println(">>> Broadcast failed: " + e.getClass().getSimpleName());
@@ -89,8 +116,19 @@ public class CommentService {
         d.setAuthorName(c.getAuthor() != null ? c.getAuthor().getName() : "Unknown");
         d.setAuthorInitials(initials(c.getAuthor() != null ? c.getAuthor().getName() : null));
         d.setBody(c.getBody());
-        d.setCreatedAt(c.getCreatedAt() != null ? c.getCreatedAt().toString() : null);
+        d.setCreatedAt(toIsoUtc(c.getCreatedAt()));
         return d;
+    }
+
+    private String toIsoUtc(Object createdAt) {
+        if (createdAt == null) return null;
+        if (createdAt instanceof Instant instant) {
+            return instant.toString();
+        }
+        if (createdAt instanceof LocalDateTime ldt) {
+            return ldt.atZone(DEFAULT_ZONE).toInstant().toString();
+        }
+        return createdAt.toString();
     }
 
     private String initials(String name) {

@@ -15,7 +15,16 @@ public class SocketLifecycle {
 
     @PostConstruct
     public void start() {
-        server.start();
-        log.info("Socket.IO server started on port {}", server.getConfiguration().getPort());
+        try {
+            server.start();
+            log.info(
+                    ">>> Socket.IO server STARTED on {}:{}",
+                    server.getConfiguration().getHostname(),
+                    server.getConfiguration().getPort()
+            );
+        } catch (Exception e) {
+            log.error(">>> Socket.IO server FAILED to start", e);
+            throw e;
+        }
     }
 }

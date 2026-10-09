@@ -23,11 +23,18 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import Service_Desk.BalPharma.reopen.dto.CreateReopenDto;
 import Service_Desk.BalPharma.reopen.dto.TicketReopenResponseDto;
+import Service_Desk.BalPharma.location.Role;
+
 
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 @Service
 @RequiredArgsConstructor
@@ -102,7 +109,14 @@ public class TicketServiceImpl implements TicketService {
 
         TicketEntity saved = ticketRepository.save(t);
 
-        List<Long> execIds = resolveExecutivesForTicket();
+        // ---- recipients -----------------------------------------------------
+        Set<Long> recipientIds = new HashSet<>();
+        if (saved.getAssignedTo() != null) {
+            recipientIds.add(saved.getAssignedTo().getId());
+        } else {
+            recipientIds.addAll(resolveExecutivesForTicket());
+        }
+        if (creator.getId() != null) recipientIds.remove(creator.getId());
 
         notificationService.notifyTicketEvent(
                 saved.getId(),
@@ -110,25 +124,27 @@ public class TicketServiceImpl implements TicketService {
                 creator.getName() + " raised a new ticket: " + saved.getSubject(),
                 "INFO",
                 "TICKET_CREATED",
-                execIds
+                new ArrayList<>(recipientIds)
         );
 
-        pushLiveToUsers(
-                execIds,
-                "TICKET_CREATED",
-                saved.getId(),
-                "New Ticket: " + saved.getTicketCode(),
-                creator.getName() + " raised: " + saved.getSubject()
-        );
+        for (Long uid : recipientIds) {
+            Map<String, Object> payload = new HashMap<>();
+            payload.put("id", "ticket-created-" + saved.getId() + "-" + uid);
+            payload.put("type", "TICKET_CREATED");
+            payload.put("ticketId", saved.getId());
+            payload.put("ticketCode", saved.getTicketCode());
+            payload.put("title", "New Ticket: " + saved.getTicketCode());
+            payload.put("message", creator.getName() + " raised: " + saved.getSubject());
+            payload.put("createdAt", Instant.now().toString());
+
+            socketHandlers.emitToUser(uid, "notification", payload);
+        }
 
         return toResponse(
                 ticketRepository.findByIdWithRelations(saved.getId()).orElse(saved)
         );
     }
 
-    /* ==================================================================
-     *  READ
-     * ================================================================ */
 
     @Override
     public List<TicketResponseDto> getAll() {
