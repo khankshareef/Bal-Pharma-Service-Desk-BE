@@ -16,8 +16,11 @@ import org.springframework.stereotype.Service;
 import java.time.LocalDateTime;
 import java.util.Comparator;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Service
 @RequiredArgsConstructor
@@ -32,27 +35,19 @@ public class ExecutiveAssignmentService {
     private static final List<String> ACTIVE_STATUSES =
             List.of("OPEN", "IN_PROGRESS");
 
-    private String normalize(String value) {
-        if (value == null) {
-            return null;
-        }
+    private final Map<String, AtomicInteger> rrCounters = new ConcurrentHashMap<>();
 
-        return value
-                .trim()
-                .replaceAll("\\s+", " ")
-                .toLowerCase();
+    private String normalize(String value) {
+        if (value == null) return null;
+        return value.trim().replaceAll("\\s+", " ").toLowerCase();
     }
 
     private boolean matches(String ticketValue, String assignmentValue) {
-        if (ticketValue == null || assignmentValue == null) {
-            return false;
-        }
-
+        if (ticketValue == null || assignmentValue == null) return false;
         return normalize(ticketValue).equals(normalize(assignmentValue));
     }
 
     private boolean coversUnit(AuthEntity executive, TicketEntity ticket) {
-
         String ticketUnitName = ticket.getUnitName();
         String ticketAddress = ticket.getAddress();
 
@@ -62,25 +57,18 @@ public class ExecutiveAssignmentService {
         }
 
         Set<UnitAssignment> locations = executive.getAllowedLocations();
-
         if (locations == null || locations.isEmpty()) {
             return true;
         }
 
         return locations.stream().anyMatch(assignment -> {
-
             String assignmentUnitName = assignment.getUnitName();
             String assignmentUnitCode = assignment.getUnitCode();
             String assignmentAddress = assignment.getAddress();
 
-            boolean unitNameMatch =
-                    matches(ticketUnitName, assignmentUnitName);
-
-            boolean unitCodeMatch =
-                    matches(ticketUnitName, assignmentUnitCode);
-
-            boolean addressMatch =
-                    matches(ticketAddress, assignmentAddress);
+            boolean unitNameMatch = matches(ticketUnitName, assignmentUnitName);
+            boolean unitCodeMatch = matches(ticketUnitName, assignmentUnitCode);
+            boolean addressMatch = matches(ticketAddress, assignmentAddress);
 
             return unitNameMatch || unitCodeMatch || addressMatch;
         });
@@ -93,140 +81,89 @@ public class ExecutiveAssignmentService {
         );
     }
 
-    public Optional<AuthEntity> findBestExecutiveForUnit(TicketEntity ticket) {
+    private List<AuthEntity> candidatesForDepartment(
+            TicketEntity ticket,
+            boolean applyUnitFilter
+    ) {
+        String department = ticket.getDepartment() != null
+                ? ticket.getDepartment().getName()
+                : null;
 
-        List<AuthEntity> allUsers = authRepository.findAll();
-
-        List<AuthEntity> executives = allUsers.stream()
-                .filter(u -> u.hasRole(Role.EXECUTIVE))
-                .toList();
-
-        log.info(
-                ">>> AutoAssign: looking for unit='{}', address='{}'",
-                ticket.getUnitName(),
-                ticket.getAddress()
-        );
-
-        log.info(
-                ">>> Total users: {} | EXECUTIVEs: {}",
-                allUsers.size(),
-                executives.size()
-        );
-
-        List<AuthEntity> activeExecutives = executives.stream()
+        List<AuthEntity> pool = authRepository.findAll().stream()
+                .filter(u -> u.hasAnyRole(Role.EXECUTIVE))
                 .filter(u -> u.getStatus() == AccountStatus.ACTIVE)
+                .filter(u -> {
+                    if (department == null || department.isBlank()) {
+                        // no department context — allow any executive
+                        return true;
+                    }
+                    return u.getDepartment() != null
+                            && department.equalsIgnoreCase(u.getDepartment());
+                })
+                .filter(u -> !applyUnitFilter || coversUnit(u, ticket))
+                .sorted(Comparator.comparing(AuthEntity::getId))
                 .toList();
 
-        for (AuthEntity executive : activeExecutives) {
-
-            Set<UnitAssignment> units =
-                    executive.getAllowedLocations();
-
-            String summary =
-                    (units == null || units.isEmpty())
-                            ? "ALL units (no restriction)"
-                            : units.stream()
-                            .map(unit ->
-                                    unit.getUnitName()
-                                            + "("
-                                            + unit.getUnitCode()
-                                            + ")"
-                            )
-                            .reduce((x, y) -> x + ", " + y)
-                            .orElse("-");
-
-            log.info(
-                    ">>> exec {} | units: {}",
-                    executive.getEmployeeId(),
-                    summary
-            );
-        }
-
-        List<AuthEntity> candidates = activeExecutives.stream()
-                .filter(executive -> coversUnit(executive, ticket))
-                .toList();
-
-        log.info(
-                ">>> Eligible executives for unit '{}' address '{}': {} -> {}",
-                ticket.getUnitName(),
-                ticket.getAddress(),
-                candidates.size(),
-                candidates.stream()
-                        .map(AuthEntity::getEmployeeId)
-                        .toList()
-        );
-
-        if (candidates.isEmpty()) {
-
+        // If unit filtering killed all candidates, fall back to department-only
+        if (pool.isEmpty() && applyUnitFilter) {
             log.warn(
-                    ">>> No eligible executive found | unit={} | address={}",
-                    ticket.getUnitName(),
-                    ticket.getAddress()
+                    ">>> AutoAssign: no dept+unit match, falling back to department-only | dept={}",
+                    department
             );
-
-            return Optional.empty();
+            return candidatesForDepartment(ticket, false);
         }
 
-        candidates.forEach(candidate ->
-                log.info(
-                        ">>> candidate {} | load={}",
-                        candidate.getEmployeeId(),
-                        currentLoad(candidate)
-                )
-        );
-
-        return candidates.stream()
-                .min(
-                        Comparator
-                                .comparingLong(this::currentLoad)
-                                .thenComparing(AuthEntity::getEmployeeId)
-                );
+        return pool;
     }
 
     public Optional<AuthEntity> autoAssignTicket(TicketEntity ticket) {
 
-        String unit = ticket.getUnitName();
+        String department = ticket.getDepartment() != null
+                ? ticket.getDepartment().getName()
+                : null;
 
-        String department =
-                ticket.getDepartment() != null
-                        ? ticket.getDepartment().getName()
-                        : null;
+        List<AuthEntity> pool = candidatesForDepartment(ticket, true);
 
-        Optional<AuthEntity> best =
-                findBestExecutiveForUnit(ticket);
+        log.info(
+                ">>> AutoAssign pool for ticket={} dept={} → {}",
+                ticket.getTicketCode(),
+                department,
+                pool.stream().map(AuthEntity::getEmployeeId).toList()
+        );
 
-        if (best.isEmpty()) {
-
+        if (pool.isEmpty()) {
             log.warn(
-                    ">>> AutoAssign FAILED: ticket={} | unit={} | address={} | department={}",
-                    ticket.getTicketCode(),
-                    unit,
-                    ticket.getAddress(),
-                    department
+                    ">>> AutoAssign FAILED: no executive in dept={} | ticket={}",
+                    department,
+                    ticket.getTicketCode()
             );
-
             return Optional.empty();
         }
 
-        AuthEntity executive = best.get();
+        String key = department == null ? "__none__" : department.toLowerCase();
+        AtomicInteger counter = rrCounters.computeIfAbsent(
+                key,
+                k -> new AtomicInteger(0)
+        );
 
-        ticket.setAssignedTo(executive);
+        int index = Math.floorMod(counter.getAndIncrement(), pool.size());
+        AuthEntity picked = pool.get(index);
+
+        ticket.setAssignedTo(picked);
         ticket.setAssignedAt(LocalDateTime.now());
         ticket.setAssignedBy(null);
         ticket.setAutoAssigned(true);
 
         log.info(
-                ">>> AutoAssign OK: {} | unit={} | address={} | department={} -> {} ({}) load={}",
+                ">>> AutoAssign OK (RR index={}): {} → {} ({}) load={}",
+                index,
                 ticket.getTicketCode(),
-                unit,
-                ticket.getAddress(),
-                department,
-                executive.getName(),
-                executive.getEmployeeId(),
-                currentLoad(executive)
+                picked.getName(),
+                picked.getEmployeeId(),
+                currentLoad(picked)
         );
 
-        return Optional.of(executive);
+        return Optional.of(picked);
     }
 
     public AuthEntity assignTicketToSpecific(
@@ -234,35 +171,37 @@ public class ExecutiveAssignmentService {
             Long executiveId,
             AuthEntity assignedBy
     ) {
-
-        AuthEntity executive =
-                authRepository.findById(executiveId)
-                        .orElseThrow(() ->
-                                new AuthException(
-                                        "Executive not found: " + executiveId
-                                )
-                        );
+        AuthEntity executive = authRepository.findById(executiveId)
+                .orElseThrow(() ->
+                        new AuthException("Executive not found: " + executiveId));
 
         if (!executive.hasRole(Role.EXECUTIVE)) {
-            throw new AuthException(
-                    "Selected user is not an executive"
-            );
+            throw new AuthException("Selected user is not an executive");
         }
 
         if (executive.getStatus() != AccountStatus.ACTIVE) {
+            throw new AuthException("Executive account is not active");
+        }
+
+        String ticketDept = ticket.getDepartment() != null
+                ? ticket.getDepartment().getName()
+                : null;
+        boolean isSuper = assignedBy.hasAnyRole(
+                Role.SUPER_MANAGER, Role.ADMIN);
+
+        if (!isSuper
+                && ticketDept != null
+                && (executive.getDepartment() == null
+                || !ticketDept.equalsIgnoreCase(executive.getDepartment()))) {
             throw new AuthException(
-                    "Executive account is not active"
-            );
+                    "Executive " + executive.getEmployeeId()
+                            + " is not in the ticket's department (" + ticketDept + ")");
         }
 
         if (!coversUnit(executive, ticket)) {
             throw new AuthException(
-                    "Executive "
-                            + executive.getEmployeeId()
-                            + " does not cover unit '"
-                            + ticket.getUnitName()
-                            + "'"
-            );
+                    "Executive " + executive.getEmployeeId()
+                            + " does not cover unit '" + ticket.getUnitName() + "'");
         }
 
         ticket.setAssignedTo(executive);

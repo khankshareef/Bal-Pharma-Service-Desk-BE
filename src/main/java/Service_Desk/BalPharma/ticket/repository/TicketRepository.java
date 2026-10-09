@@ -48,7 +48,6 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
     """)
     List<TicketEntity> findByCreatedById(@Param("userId") Long userId);
 
-
     long countByAssignedToIdAndStatusIn(Long executiveId, List<String> statuses);
 
     long countByAssignedToId(Long executiveId);
@@ -56,7 +55,6 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
     long countByAssignedToIdAndStatus(Long executiveId, String status);
 
     long countByAssignedToIdAndSlaStatus(Long executiveId, String slaStatus);
-
 
     @Query("""
         SELECT t FROM TicketEntity t
@@ -93,10 +91,25 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
         LEFT JOIN FETCH t.subCategory
         LEFT JOIN FETCH t.createdBy
         WHERE t.assignedTo IS NULL
-          AND t.status = 'OPEN'
-        ORDER BY t.createdAt DESC
+          AND UPPER(t.status) = 'OPEN'
+        ORDER BY t.createdAt ASC
     """)
     List<TicketEntity> findUnassignedOpenTickets();
+
+    @Query("""
+        SELECT t FROM TicketEntity t
+        LEFT JOIN FETCH t.assignedTo
+        LEFT JOIN FETCH t.department
+        LEFT JOIN FETCH t.category
+        LEFT JOIN FETCH t.subCategory
+        LEFT JOIN FETCH t.createdBy
+        WHERE t.assignedTo IS NULL
+          AND UPPER(t.status) = 'OPEN'
+          AND LOWER(t.department.name) = LOWER(:departmentName)
+        ORDER BY t.createdAt ASC
+    """)
+    List<TicketEntity> findUnassignedOpenTicketsByDepartment(
+            @Param("departmentName") String departmentName);
 
     @Query("""
         SELECT t FROM TicketEntity t

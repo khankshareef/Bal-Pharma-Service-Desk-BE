@@ -53,46 +53,55 @@ public class CommentService {
         CommentEntity saved = commentRepository.save(c);
         CommentDto dto = toDto(saved);
 
-        System.out.println(">>> addComment reached, broadcasting for ticket " + ticketId);
+        System.out.println(">>> addComment reached for ticket " + ticketId);
 
         try {
-            // 1) broadcast raw comment so every open ticket page updates live
-            System.out.println(">>> Broadcasting ticket:comment for ticket " + ticketId);
-            socketHandlers.broadcast("ticket:comment", dto);
-
-            // 2) notify BOTH creator and assignee (skip author)
-            Set<Long> recipients = new HashSet<>();
+            Set<Long> participants = new HashSet<>();
             if (ticket.getCreatedBy() != null)
-                recipients.add(ticket.getCreatedBy().getId());
+                participants.add(ticket.getCreatedBy().getId());
             if (ticket.getAssignedTo() != null)
-                recipients.add(ticket.getAssignedTo().getId());
-            recipients.remove(authorId); // never notify the author
+                participants.add(ticket.getAssignedTo().getId());
+            participants.add(authorId);   // so the author's own other tabs update too
 
-            if (!recipients.isEmpty()) {
+            System.out.println(
+                    ">>> ticket:comment → participants: " + participants);
+            for (Long uid : participants) {
+                socketHandlers.emitToUser(uid, "ticket:comment", dto);
+            }
+
+            Set<Long> notifyIds = new HashSet<>(participants);
+            notifyIds.remove(authorId);
+
+            if (!notifyIds.isEmpty()) {
                 String preview = body.length() > 90
                         ? body.substring(0, 90) + "…"
                         : body;
 
-                for (Long uid : recipients) {
+                for (Long uid : notifyIds) {
                     Map<String, Object> payload = new HashMap<>();
                     payload.put("id", "comment-" + saved.getId() + "-" + uid);
                     payload.put("type", "COMMENT");
                     payload.put("ticketId", ticketId);
                     payload.put("ticketCode", ticket.getTicketCode());
-                    payload.put("title", "New comment on " + ticket.getTicketCode());
+                    payload.put("title",
+                            "New comment on " + ticket.getTicketCode());
                     payload.put("message", author.getName() + ": " + preview);
                     payload.put("source",
-                            author.hasAnyRole(Service_Desk.BalPharma.location.Role.EXECUTIVE)
+                            author.hasAnyRole(
+                                    Service_Desk.BalPharma.location.Role.EXECUTIVE)
                                     ? "EXECUTIVE" : "USER");
+                    payload.put("actorId", authorId);
                     payload.put("createdAt", dto.getCreatedAt());
 
                     System.out.println(
-                            ">>> Notifying user " + uid + " about comment " + saved.getId());
+                            ">>> Notifying user " + uid + " about comment "
+                                    + saved.getId());
                     socketHandlers.emitToUser(uid, "notification", payload);
                 }
             }
         } catch (Exception e) {
-            System.err.println(">>> Broadcast failed: " + e.getClass().getSimpleName());
+            System.err.println(">>> Broadcast failed: "
+                    + e.getClass().getSimpleName());
             e.printStackTrace();
         }
 
@@ -113,8 +122,10 @@ public class CommentService {
         d.setId(c.getId());
         d.setTicketId(c.getTicket() != null ? c.getTicket().getId() : null);
         d.setAuthorId(c.getAuthor() != null ? c.getAuthor().getId() : null);
-        d.setAuthorName(c.getAuthor() != null ? c.getAuthor().getName() : "Unknown");
-        d.setAuthorInitials(initials(c.getAuthor() != null ? c.getAuthor().getName() : null));
+        d.setAuthorName(
+                c.getAuthor() != null ? c.getAuthor().getName() : "Unknown");
+        d.setAuthorInitials(
+                initials(c.getAuthor() != null ? c.getAuthor().getName() : null));
         d.setBody(c.getBody());
         d.setCreatedAt(toIsoUtc(c.getCreatedAt()));
         return d;
@@ -122,12 +133,9 @@ public class CommentService {
 
     private String toIsoUtc(Object createdAt) {
         if (createdAt == null) return null;
-        if (createdAt instanceof Instant instant) {
-            return instant.toString();
-        }
-        if (createdAt instanceof LocalDateTime ldt) {
+        if (createdAt instanceof Instant instant) return instant.toString();
+        if (createdAt instanceof LocalDateTime ldt)
             return ldt.atZone(DEFAULT_ZONE).toInstant().toString();
-        }
         return createdAt.toString();
     }
 

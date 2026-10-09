@@ -86,8 +86,10 @@ public class TicketController {
     }
 
     @GetMapping("/unassigned")
-    public ResponseEntity<List<TicketResponseDto>> getUnassigned() {
-        return ResponseEntity.ok(ticketService.getUnassignedOpenTickets());
+    public ResponseEntity<List<TicketResponseDto>> getUnassigned(
+            @RequestParam String employeeId) {
+        return ResponseEntity.ok(
+                ticketService.getUnassignedOpenTicketsForCaller(employeeId));
     }
 
     @GetMapping("/sla-dashboard/{employeeId}")

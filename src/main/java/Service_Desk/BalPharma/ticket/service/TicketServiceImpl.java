@@ -109,12 +109,17 @@ public class TicketServiceImpl implements TicketService {
 
         TicketEntity saved = ticketRepository.save(t);
 
-        // ---- recipients -----------------------------------------------------
         Set<Long> recipientIds = new HashSet<>();
         if (saved.getAssignedTo() != null) {
             recipientIds.add(saved.getAssignedTo().getId());
         } else {
-            recipientIds.addAll(resolveExecutivesForTicket());
+            recipientIds.addAll(
+                    resolveExecutivesForDepartment(
+                            saved.getDepartment() != null
+                                    ? saved.getDepartment().getName()
+                                    : null
+                    )
+            );
         }
         if (creator.getId() != null) recipientIds.remove(creator.getId());
 
@@ -211,7 +216,8 @@ public class TicketServiceImpl implements TicketService {
 
         TicketEntity saved = ticketRepository.save(t);
 
-        List<Long> execIds = resolveExecutivesForTicket();
+        List<Long> execIds = resolveExecutivesForDepartment(
+                saved.getDepartment() != null ? saved.getDepartment().getName() : null);
 
         notificationService.notifyTicketEvent(
                 saved.getId(),
@@ -490,7 +496,8 @@ public class TicketServiceImpl implements TicketService {
 
         TicketReopenEntity saved = reopenRepository.save(r);
 
-        List<Long> execIds = resolveExecutivesForTicket();
+        List<Long> execIds = resolveExecutivesForDepartment(
+                t.getDepartment() != null ? t.getDepartment().getName() : null);
 
         notificationService.notifyTicketEvent(
                 t.getId(),
@@ -527,6 +534,31 @@ public class TicketServiceImpl implements TicketService {
     @Override
     public List<TicketResponseDto> getUnassignedOpenTickets() {
         return ticketRepository.findUnassignedOpenTickets().stream()
+                .map(this::toResponse)
+                .toList();
+    }
+
+
+    @Override
+    public List<TicketResponseDto> getUnassignedOpenTicketsForCaller(String employeeId) {
+
+        AuthEntity caller = authRepository.findByEmployeeId(employeeId)
+                .orElseThrow(() -> new AuthException("Employee not found"));
+
+        if (caller.hasAnyRole(Role.SUPER_MANAGER, Role.ADMIN)) {
+            return ticketRepository.findUnassignedOpenTickets().stream()
+                    .map(this::toResponse)
+                    .toList();
+        }
+
+        String department = caller.getDepartment();
+        if (department == null || department.isBlank()) {
+            return List.of();
+        }
+
+        return ticketRepository
+                .findUnassignedOpenTicketsByDepartment(department)
+                .stream()
                 .map(this::toResponse)
                 .toList();
     }
@@ -622,10 +654,18 @@ public class TicketServiceImpl implements TicketService {
         }
     }
 
-    private List<Long> resolveExecutivesForTicket() {
-        List<AuthEntity> all = authRepository.findAll();
-        return all.stream()
-                .filter(u -> u.hasAnyRole(Role.EXECUTIVE, Role.SUPER_MANAGER))
+    private List<Long> resolveExecutivesForDepartment(String departmentName) {
+        if (departmentName == null || departmentName.isBlank()) {
+            return authRepository.findAll().stream()
+                    .filter(u -> u.hasAnyRole(Role.SUPER_MANAGER))
+                    .map(AuthEntity::getId)
+                    .toList();
+        }
+
+        return authRepository.findAll().stream()
+                .filter(u ->
+                        u.hasAnyRole(Role.EXECUTIVE) &&
+                                departmentName.equalsIgnoreCase(u.getDepartment()))
                 .map(AuthEntity::getId)
                 .toList();
     }

@@ -17,7 +17,6 @@ public class SocketHandlers {
     private final SocketIOServer server;
     private final SocketAuthService authService;
 
-    /** userId -> socket session id */
     private final Map<Long, String> userSockets = new ConcurrentHashMap<>();
 
     @PostConstruct

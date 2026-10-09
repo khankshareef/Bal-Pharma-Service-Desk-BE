@@ -2,7 +2,6 @@ package Service_Desk.BalPharma.ticket.service;
 
 import Service_Desk.BalPharma.reopen.dto.CreateReopenDto;
 import Service_Desk.BalPharma.ticket.dto.*;
-import Service_Desk.BalPharma.reopen.dto.CreateReopenDto;
 import Service_Desk.BalPharma.reopen.dto.TicketReopenResponseDto;
 
 import java.util.List;
@@ -19,9 +18,8 @@ public interface TicketService {
     TicketResponseDto assignTicket(Long id, AssignTicketDto dto, String assignedByEmployeeId);
     List<TicketResponseDto> getAssignedToExecutive(String employeeId);
     List<TicketResponseDto> getUnassignedOpenTickets();
+    List<TicketResponseDto> getUnassignedOpenTicketsForCaller(String employeeId);
     SlaDashboardDto getSlaDashboard(String employeeId);
     TicketStatsDto getStatsForExecutive(String employeeId);
     TicketReopenResponseDto requestReopen(Long ticketId, CreateReopenDto dto, String employeeId);
-
-
 }
