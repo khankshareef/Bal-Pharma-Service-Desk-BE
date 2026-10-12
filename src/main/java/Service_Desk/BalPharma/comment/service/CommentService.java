@@ -53,36 +53,30 @@ public class CommentService {
         CommentEntity saved = commentRepository.save(c);
         CommentDto dto = toDto(saved);
 
-        System.out.println(">>> addComment reached for ticket " + ticketId);
+        dto.setAuthorRole(resolveRole(author));
 
         Set<Long> participants = new HashSet<>();
         if (ticket.getCreatedBy() != null)
             participants.add(ticket.getCreatedBy().getId());
         if (ticket.getAssignedTo() != null)
             participants.add(ticket.getAssignedTo().getId());
-        participants.add(authorId); // author's own other tabs
+        participants.add(authorId);
 
         try {
-            System.out.println(
-                    ">>> ticket:comment → participants: " + participants);
-
             for (Long uid : participants) {
                 socketHandlers.emitToUser(uid, "ticket:comment", dto);
             }
         } catch (Exception e) {
-            System.err.println(">>> ticket:comment broadcast failed: "
-                    + e.getClass().getSimpleName());
-            e.printStackTrace();
+            System.err.println("ticket:comment broadcast failed: " + e.getMessage());
         }
 
+        // persist notification
         Set<Long> notifyIds = new HashSet<>(participants);
         notifyIds.remove(authorId);
-
         if (!notifyIds.isEmpty()) {
             String preview = body.length() > 90
                     ? body.substring(0, 90) + "…"
                     : body;
-
             for (Long uid : notifyIds) {
                 try {
                     notificationService.notifyUser(
@@ -94,8 +88,7 @@ public class CommentService {
                             ticketId
                     );
                 } catch (Exception e) {
-                    System.err.println(">>> DB notify failed for user "
-                            + uid + ": " + e.getMessage());
+                    System.err.println("notify failed for user " + uid + ": " + e.getMessage());
                 }
             }
         }
@@ -112,17 +105,31 @@ public class CommentService {
                 .toList();
     }
 
+    private String resolveRole(AuthEntity author) {
+        if (author == null || author.getRoles() == null || author.getRoles().isEmpty()) {
+            return "USER";
+        }
+        // pick an executive-type role if present, otherwise first role
+        return author.getRoles().stream()
+                .map(Enum::name)
+                .filter(r -> r.equals("EXECUTIVE") || r.equals("ADMIN")
+                        || r.equals("SUPER_MANAGER") || r.equals("DEPUTY_MANAGER"))
+                .findFirst()
+                .orElseGet(() -> author.getRoles().iterator().next().name());
+    }
+
     private CommentDto toDto(CommentEntity c) {
         CommentDto d = new CommentDto();
         d.setId(c.getId());
         d.setTicketId(c.getTicket() != null ? c.getTicket().getId() : null);
         d.setAuthorId(c.getAuthor() != null ? c.getAuthor().getId() : null);
-        d.setAuthorName(
-                c.getAuthor() != null ? c.getAuthor().getName() : "Unknown");
-        d.setAuthorInitials(
-                initials(c.getAuthor() != null ? c.getAuthor().getName() : null));
+        d.setAuthorName(c.getAuthor() != null ? c.getAuthor().getName() : "Unknown");
+        d.setAuthorInitials(initials(c.getAuthor() != null ? c.getAuthor().getName() : null));
         d.setBody(c.getBody());
         d.setCreatedAt(toIsoUtc(c.getCreatedAt()));
+        if (c.getAuthor() != null) {
+            d.setAuthorRole(resolveRole(c.getAuthor()));
+        }
         return d;
     }
 
