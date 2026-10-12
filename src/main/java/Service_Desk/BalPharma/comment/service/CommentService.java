@@ -6,6 +6,7 @@ import Service_Desk.BalPharma.comment.dto.CommentDto;
 import Service_Desk.BalPharma.comment.entity.CommentEntity;
 import Service_Desk.BalPharma.comment.repository.CommentRepository;
 import Service_Desk.BalPharma.exception.AuthException;
+import Service_Desk.BalPharma.notification.service.NotificationService;
 import Service_Desk.BalPharma.socket.SocketHandlers;
 import Service_Desk.BalPharma.ticket.entity.TicketEntity;
 import Service_Desk.BalPharma.ticket.repository.TicketRepository;
@@ -16,10 +17,8 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.Instant;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.Set;
 
 @Service
@@ -32,6 +31,7 @@ public class CommentService {
     private final TicketRepository ticketRepository;
     private final AuthRepository authRepository;
     private final SocketHandlers socketHandlers;
+    private final NotificationService notificationService;
 
     @Transactional
     public CommentDto addComment(Long ticketId, String body, Long authorId) {
@@ -55,54 +55,49 @@ public class CommentService {
 
         System.out.println(">>> addComment reached for ticket " + ticketId);
 
-        try {
-            Set<Long> participants = new HashSet<>();
-            if (ticket.getCreatedBy() != null)
-                participants.add(ticket.getCreatedBy().getId());
-            if (ticket.getAssignedTo() != null)
-                participants.add(ticket.getAssignedTo().getId());
-            participants.add(authorId);   // so the author's own other tabs update too
+        Set<Long> participants = new HashSet<>();
+        if (ticket.getCreatedBy() != null)
+            participants.add(ticket.getCreatedBy().getId());
+        if (ticket.getAssignedTo() != null)
+            participants.add(ticket.getAssignedTo().getId());
+        participants.add(authorId); // author's own other tabs
 
+        try {
             System.out.println(
                     ">>> ticket:comment → participants: " + participants);
+
             for (Long uid : participants) {
                 socketHandlers.emitToUser(uid, "ticket:comment", dto);
             }
-
-            Set<Long> notifyIds = new HashSet<>(participants);
-            notifyIds.remove(authorId);
-
-            if (!notifyIds.isEmpty()) {
-                String preview = body.length() > 90
-                        ? body.substring(0, 90) + "…"
-                        : body;
-
-                for (Long uid : notifyIds) {
-                    Map<String, Object> payload = new HashMap<>();
-                    payload.put("id", "comment-" + saved.getId() + "-" + uid);
-                    payload.put("type", "COMMENT");
-                    payload.put("ticketId", ticketId);
-                    payload.put("ticketCode", ticket.getTicketCode());
-                    payload.put("title",
-                            "New comment on " + ticket.getTicketCode());
-                    payload.put("message", author.getName() + ": " + preview);
-                    payload.put("source",
-                            author.hasAnyRole(
-                                    Service_Desk.BalPharma.location.Role.EXECUTIVE)
-                                    ? "EXECUTIVE" : "USER");
-                    payload.put("actorId", authorId);
-                    payload.put("createdAt", dto.getCreatedAt());
-
-                    System.out.println(
-                            ">>> Notifying user " + uid + " about comment "
-                                    + saved.getId());
-                    socketHandlers.emitToUser(uid, "notification", payload);
-                }
-            }
         } catch (Exception e) {
-            System.err.println(">>> Broadcast failed: "
+            System.err.println(">>> ticket:comment broadcast failed: "
                     + e.getClass().getSimpleName());
             e.printStackTrace();
+        }
+
+        Set<Long> notifyIds = new HashSet<>(participants);
+        notifyIds.remove(authorId);
+
+        if (!notifyIds.isEmpty()) {
+            String preview = body.length() > 90
+                    ? body.substring(0, 90) + "…"
+                    : body;
+
+            for (Long uid : notifyIds) {
+                try {
+                    notificationService.notifyUser(
+                            uid,
+                            "New message on " + ticket.getTicketCode(),
+                            author.getName() + ": " + preview,
+                            "COMMENT",
+                            "COMMENT",
+                            ticketId
+                    );
+                } catch (Exception e) {
+                    System.err.println(">>> DB notify failed for user "
+                            + uid + ": " + e.getMessage());
+                }
+            }
         }
 
         return dto;
