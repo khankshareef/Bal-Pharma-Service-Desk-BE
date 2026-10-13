@@ -10,6 +10,7 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
+import java.util.Map;
 import java.util.stream.Collectors;
 
 @Service
@@ -21,48 +22,89 @@ public class ConfigService {
     private final StatusRepository statusRepository;
     private final TicketRepository ticketRepository;
 
+    private static String normalize(String value) {
+        if (value == null) return "";
+        return value.trim()
+                .toUpperCase()
+                .replaceAll("[\\s\\-]+", "_");
+    }
+
     public List<PriorityConfigDto> getPriorities() {
 
-        // count tickets per priority string ("HIGH", "CRITICAL", ...)
-        var counts = ticketRepository.findAllWithRelations().stream()
-                .filter(t -> t.getPriority() != null)
+        // count tickets per normalized priority string ("HIGH", "CRITICAL", ...)
+        Map<String, Long> counts = ticketRepository.findAllWithRelations().stream()
+                .filter(t -> t.getPriority() != null && !t.getPriority().isBlank())
                 .collect(Collectors.groupingBy(
-                        t -> t.getPriority().toUpperCase(),
-                        Collectors.counting()));
+                        t -> normalize(t.getPriority()),
+                        Collectors.counting()
+                ));
 
-        return priorityRepository.findAllByOrderByDisplayOrderAsc().stream()
+        System.out.println(">>> [ConfigService] priority counts: " + counts);
+
+        List<PriorityConfigDto> out = priorityRepository
+                .findAllByOrderByDisplayOrderAsc()
+                .stream()
                 .map(p -> {
                     PriorityConfigDto d = new PriorityConfigDto();
                     d.setId(p.getId());
                     d.setPriorityId(p.getPriorityCode());
                     d.setName(p.getName());
                     d.setActive(p.getActive());
-                    d.setTickets(counts.getOrDefault(
-                            p.getName().toUpperCase(), 0L));
+
+                    // try priorityCode first (the value tickets store), then name
+                    long tickets = counts.getOrDefault(
+                            normalize(p.getPriorityCode()), 0L);
+                    if (tickets == 0L) {
+                        tickets = counts.getOrDefault(
+                                normalize(p.getName()), 0L);
+                    }
+
+                    d.setTickets(tickets);
                     return d;
                 })
                 .toList();
+
+        System.out.println(">>> [ConfigService] priorities returned: "
+                + out.size());
+        return out;
     }
 
     public List<StatusConfigDto> getStatuses() {
 
-        var counts = ticketRepository.findAllWithRelations().stream()
-                .filter(t -> t.getStatus() != null)
+        // count tickets per normalized status ("OPEN", "IN_PROGRESS", ...)
+        Map<String, Long> counts = ticketRepository.findAllWithRelations().stream()
+                .filter(t -> t.getStatus() != null && !t.getStatus().isBlank())
                 .collect(Collectors.groupingBy(
-                        t -> t.getStatus().toUpperCase(),
-                        Collectors.counting()));
+                        t -> normalize(t.getStatus()),
+                        Collectors.counting()
+                ));
 
-        return statusRepository.findAllByOrderByDisplayOrderAsc().stream()
+        System.out.println(">>> [ConfigService] status counts: " + counts);
+
+        List<StatusConfigDto> out = statusRepository
+                .findAllByOrderByDisplayOrderAsc()
+                .stream()
                 .map(s -> {
                     StatusConfigDto d = new StatusConfigDto();
                     d.setId(s.getId());
                     d.setStatusId(s.getStatusCode());
                     d.setName(s.getName());
                     d.setActive(s.getActive());
-                    d.setTickets(counts.getOrDefault(
-                            s.getName().toUpperCase().replace(" ", "_"), 0L));
+
+                    long tickets = counts.getOrDefault(
+                            normalize(s.getStatusCode()), 0L);
+                    if (tickets == 0L) {
+                        tickets = counts.getOrDefault(
+                                normalize(s.getName()), 0L);
+                    }
+
+                    d.setTickets(tickets);
                     return d;
                 })
                 .toList();
+
+        System.out.println(">>> [ConfigService] statuses returned: "
+                + out.size());
+        return out;
     }
 }

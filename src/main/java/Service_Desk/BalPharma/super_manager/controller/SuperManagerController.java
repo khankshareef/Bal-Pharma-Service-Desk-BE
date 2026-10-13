@@ -1,11 +1,18 @@
 package Service_Desk.BalPharma.super_manager.controller;
+
+import Service_Desk.BalPharma.auth.entity.AuthEntity;
+import Service_Desk.BalPharma.auth.repository.AuthRepository;
+import Service_Desk.BalPharma.exception.AuthException;
 import Service_Desk.BalPharma.super_manager.dto.*;
 import Service_Desk.BalPharma.super_manager.service.SuperManagerService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
+import org.springframework.security.oauth2.jwt.Jwt;
 import org.springframework.web.bind.annotation.*;
 
 import java.util.List;
+import java.util.Map;
 
 @RestController
 @RequestMapping("/super-manager/users")
@@ -13,6 +20,8 @@ import java.util.List;
 public class SuperManagerController {
 
     private final SuperManagerService superManagerService;
+    private final AuthRepository authRepository;
+
     @PostMapping
     public ResponseEntity<UserResponseDto> create(@RequestBody CreateUserDto dto) {
         return ResponseEntity.ok(superManagerService.createUser(dto));
@@ -34,8 +43,9 @@ public class SuperManagerController {
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<UserResponseDto> update(@PathVariable Long id,
-                                                  @RequestBody UpdateUserDto dto) {
+    public ResponseEntity<UserResponseDto> update(
+            @PathVariable Long id,
+            @RequestBody UpdateUserDto dto) {
         return ResponseEntity.ok(superManagerService.updateUser(id, dto));
     }
 
@@ -46,14 +56,33 @@ public class SuperManagerController {
     }
 
     @PutMapping("/{id}/locations")
-    public ResponseEntity<UserResponseDto> updateLocations(@PathVariable Long id,
-                                                           @RequestBody UpdateLocationsDto dto) {
+    public ResponseEntity<UserResponseDto> updateLocations(
+            @PathVariable Long id,
+            @RequestBody UpdateLocationsDto dto) {
         return ResponseEntity.ok(superManagerService.updateLocations(id, dto));
     }
 
     @PatchMapping("/{id}/status")
-    public ResponseEntity<UserResponseDto> updateStatus(@PathVariable Long id,
-                                                        @RequestBody UpdateStatusDto dto) {
+    public ResponseEntity<UserResponseDto> updateStatus(
+            @PathVariable Long id,
+            @RequestBody UpdateStatusDto dto) {
         return ResponseEntity.ok(superManagerService.updateStatus(id, dto));
+    }
+
+    @PatchMapping("/{id}/reset-password")
+    public ResponseEntity<?> resetPassword(
+            @PathVariable Long id,
+            @AuthenticationPrincipal Jwt jwt) {
+
+        String employeeId = jwt.getSubject();
+        AuthEntity performedBy = authRepository.findByEmployeeId(employeeId)
+                .orElseThrow(() -> new AuthException("Actor not found"));
+
+        String tempPassword = superManagerService.resetPassword(id, performedBy);
+
+        return ResponseEntity.ok(Map.of(
+                "tempPassword", tempPassword,
+                "message", "Password reset. User must change it on next login."
+        ));
     }
 }

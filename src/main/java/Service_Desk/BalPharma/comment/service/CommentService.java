@@ -6,6 +6,7 @@ import Service_Desk.BalPharma.comment.dto.CommentDto;
 import Service_Desk.BalPharma.comment.entity.CommentEntity;
 import Service_Desk.BalPharma.comment.repository.CommentRepository;
 import Service_Desk.BalPharma.exception.AuthException;
+import Service_Desk.BalPharma.location.Role;
 import Service_Desk.BalPharma.notification.service.NotificationService;
 import Service_Desk.BalPharma.socket.SocketHandlers;
 import Service_Desk.BalPharma.ticket.entity.TicketEntity;
@@ -53,7 +54,7 @@ public class CommentService {
         CommentEntity saved = commentRepository.save(c);
         CommentDto dto = toDto(saved);
 
-        dto.setAuthorRole(resolveRole(author));
+        System.out.println(">>> addComment reached for ticket " + ticketId);
 
         Set<Long> participants = new HashSet<>();
         if (ticket.getCreatedBy() != null)
@@ -62,21 +63,37 @@ public class CommentService {
             participants.add(ticket.getAssignedTo().getId());
         participants.add(authorId);
 
+        List<AuthEntity> admins = authRepository.findAll().stream()
+                .filter(u -> u.hasAnyRole(Role.ADMIN, Role.SUPER_MANAGER))
+                .toList();
+        for (AuthEntity a : admins) {
+            participants.add(a.getId());
+        }
+
         try {
+            System.out.println(
+                    ">>> ticket:comment → participants: " + participants);
             for (Long uid : participants) {
                 socketHandlers.emitToUser(uid, "ticket:comment", dto);
             }
         } catch (Exception e) {
-            System.err.println("ticket:comment broadcast failed: " + e.getMessage());
+            System.err.println(">>> ticket:comment broadcast failed: "
+                    + e.getClass().getSimpleName());
+            e.printStackTrace();
         }
 
-        // persist notification
-        Set<Long> notifyIds = new HashSet<>(participants);
+        Set<Long> notifyIds = new HashSet<>();
+        if (ticket.getCreatedBy() != null)
+            notifyIds.add(ticket.getCreatedBy().getId());
+        if (ticket.getAssignedTo() != null)
+            notifyIds.add(ticket.getAssignedTo().getId());
         notifyIds.remove(authorId);
+
         if (!notifyIds.isEmpty()) {
             String preview = body.length() > 90
                     ? body.substring(0, 90) + "…"
                     : body;
+
             for (Long uid : notifyIds) {
                 try {
                     notificationService.notifyUser(
@@ -88,7 +105,8 @@ public class CommentService {
                             ticketId
                     );
                 } catch (Exception e) {
-                    System.err.println("notify failed for user " + uid + ": " + e.getMessage());
+                    System.err.println(">>> DB notify failed for user "
+                            + uid + ": " + e.getMessage());
                 }
             }
         }
@@ -105,31 +123,17 @@ public class CommentService {
                 .toList();
     }
 
-    private String resolveRole(AuthEntity author) {
-        if (author == null || author.getRoles() == null || author.getRoles().isEmpty()) {
-            return "USER";
-        }
-        // pick an executive-type role if present, otherwise first role
-        return author.getRoles().stream()
-                .map(Enum::name)
-                .filter(r -> r.equals("EXECUTIVE") || r.equals("ADMIN")
-                        || r.equals("SUPER_MANAGER") || r.equals("DEPUTY_MANAGER"))
-                .findFirst()
-                .orElseGet(() -> author.getRoles().iterator().next().name());
-    }
-
     private CommentDto toDto(CommentEntity c) {
         CommentDto d = new CommentDto();
         d.setId(c.getId());
         d.setTicketId(c.getTicket() != null ? c.getTicket().getId() : null);
         d.setAuthorId(c.getAuthor() != null ? c.getAuthor().getId() : null);
-        d.setAuthorName(c.getAuthor() != null ? c.getAuthor().getName() : "Unknown");
-        d.setAuthorInitials(initials(c.getAuthor() != null ? c.getAuthor().getName() : null));
+        d.setAuthorName(
+                c.getAuthor() != null ? c.getAuthor().getName() : "Unknown");
+        d.setAuthorInitials(
+                initials(c.getAuthor() != null ? c.getAuthor().getName() : null));
         d.setBody(c.getBody());
         d.setCreatedAt(toIsoUtc(c.getCreatedAt()));
-        if (c.getAuthor() != null) {
-            d.setAuthorRole(resolveRole(c.getAuthor()));
-        }
         return d;
     }
 

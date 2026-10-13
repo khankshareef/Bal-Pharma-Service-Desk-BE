@@ -181,6 +181,8 @@ public class SuperManagerServiceImpl implements SuperManagerService {
     }
 
 
+
+
     @Override
     public void deleteUser(Long id) {
         if (!authRepository.existsById(id))
@@ -202,6 +204,7 @@ public class SuperManagerServiceImpl implements SuperManagerService {
         user.setPasswordLastReset(LocalDateTime.now());
         user.setResetBy(performedBy);
         authRepository.save(user);
+
         return temp;
     }
 
@@ -215,14 +218,6 @@ public class SuperManagerServiceImpl implements SuperManagerService {
         return new UserStatsDto(total, active, inactive, 0, 0, 0, 0, 0);
     }
 
-    /* ==================================================================
-     *  PER-ROLE UNITS (repository-backed)
-     * ================================================================ */
-
-    /**
-     * Overwrites the per-role unit rows for this user with the given map.
-     * Delete-then-insert; runs in the same transaction as the caller.
-     */
     private void saveRoleUnits(AuthEntity user, Map<String, List<String>> map) {
 
         userRoleUnitRepository.deleteByUserId(user.getId());
