@@ -9,9 +9,9 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.stream.Collectors;
 
 @Service
 @RequiredArgsConstructor
@@ -19,31 +19,18 @@ import java.util.stream.Collectors;
 public class ConfigService {
 
     private final PriorityRepository priorityRepository;
-    private final StatusRepository statusRepository;
-    private final TicketRepository ticketRepository;
+    private final StatusRepository   statusRepository;
+    private final TicketRepository   ticketRepository;
 
-    private static String normalize(String value) {
-        if (value == null) return "";
-        return value.trim()
-                .toUpperCase()
-                .replaceAll("[\\s\\-]+", "_");
-    }
 
     public List<PriorityConfigDto> getPriorities() {
 
-        // count tickets per normalized priority string ("HIGH", "CRITICAL", ...)
-        Map<String, Long> counts = ticketRepository.findAllWithRelations().stream()
-                .filter(t -> t.getPriority() != null && !t.getPriority().isBlank())
-                .collect(Collectors.groupingBy(
-                        t -> normalize(t.getPriority()),
-                        Collectors.counting()
-                ));
+        Map<String, Long> counts = new HashMap<>();
+        for (Object[] row : ticketRepository.countGroupedByPriority()) {
+            counts.put((String) row[0], (Long) row[1]);
+        }
 
-        System.out.println(">>> [ConfigService] priority counts: " + counts);
-
-        List<PriorityConfigDto> out = priorityRepository
-                .findAllByOrderByDisplayOrderAsc()
-                .stream()
+        return priorityRepository.findAllByOrderByDisplayOrderAsc().stream()
                 .map(p -> {
                     PriorityConfigDto d = new PriorityConfigDto();
                     d.setId(p.getId());
@@ -51,60 +38,69 @@ public class ConfigService {
                     d.setName(p.getName());
                     d.setActive(p.getActive());
 
-                    // try priorityCode first (the value tickets store), then name
-                    long tickets = counts.getOrDefault(
-                            normalize(p.getPriorityCode()), 0L);
-                    if (tickets == 0L) {
-                        tickets = counts.getOrDefault(
-                                normalize(p.getName()), 0L);
-                    }
-
-                    d.setTickets(tickets);
+                    long ticketCount = resolvePriorityCount(p, counts);
+                    d.setTickets(ticketCount);
                     return d;
                 })
                 .toList();
-
-        System.out.println(">>> [ConfigService] priorities returned: "
-                + out.size());
-        return out;
     }
+
+    private long resolvePriorityCount(
+            Service_Desk.BalPharma.configData.entity.PriorityEntity p,
+            Map<String, Long> counts) {
+
+        if (p.getName() == null) return 0L;
+
+        String upper = p.getName().toUpperCase().replace(' ', '_');
+
+        if (counts.containsKey(upper)) return counts.get(upper);
+
+        switch (upper) {
+            case "MEDIUM":  return counts.getOrDefault("NORMAL",  0L)
+                    + counts.getOrDefault("MEDIUM",  0L);
+            case "DEFERRED":return counts.getOrDefault("DEFERRED",0L)
+                    + counts.getOrDefault("LOW",     0L);
+            default:        return 0L;
+        }
+    }
+
 
     public List<StatusConfigDto> getStatuses() {
 
-        // count tickets per normalized status ("OPEN", "IN_PROGRESS", ...)
-        Map<String, Long> counts = ticketRepository.findAllWithRelations().stream()
-                .filter(t -> t.getStatus() != null && !t.getStatus().isBlank())
-                .collect(Collectors.groupingBy(
-                        t -> normalize(t.getStatus()),
-                        Collectors.counting()
-                ));
+        Map<String, Long> counts = new HashMap<>();
+        for (Object[] row : ticketRepository.countGroupedByStatus()) {
+            counts.put((String) row[0], (Long) row[1]);
+        }
 
-        System.out.println(">>> [ConfigService] status counts: " + counts);
-
-        List<StatusConfigDto> out = statusRepository
-                .findAllByOrderByDisplayOrderAsc()
-                .stream()
+        return statusRepository.findAllByOrderByDisplayOrderAsc().stream()
                 .map(s -> {
                     StatusConfigDto d = new StatusConfigDto();
                     d.setId(s.getId());
                     d.setStatusId(s.getStatusCode());
                     d.setName(s.getName());
                     d.setActive(s.getActive());
-
-                    long tickets = counts.getOrDefault(
-                            normalize(s.getStatusCode()), 0L);
-                    if (tickets == 0L) {
-                        tickets = counts.getOrDefault(
-                                normalize(s.getName()), 0L);
-                    }
-
-                    d.setTickets(tickets);
+                    d.setTickets(resolveStatusCount(s, counts));
                     return d;
                 })
                 .toList();
+    }
 
-        System.out.println(">>> [ConfigService] statuses returned: "
-                + out.size());
-        return out;
+    private long resolveStatusCount(
+            Service_Desk.BalPharma.configData.entity.StatusEntity s,
+            Map<String, Long> counts) {
+
+        if (s.getName() == null) return 0L;
+
+        String upper = s.getName().toUpperCase().replace(' ', '_');
+
+        if (counts.containsKey(upper)) return counts.get(upper);
+
+        switch (upper) {
+            case "RESOLVED": return counts.getOrDefault("RESOLVED", 0L);
+            case "CANCELLED":
+            case "CANCELED": return counts.getOrDefault("CANCELLED", 0L)
+                    + counts.getOrDefault("CANCELED", 0L);
+            default:         return 0L;
+        }
     }
 }

@@ -11,6 +11,7 @@ import java.util.Optional;
 
 public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
 
+
     @Query("""
         SELECT t FROM TicketEntity t
         LEFT JOIN FETCH t.createdBy
@@ -48,6 +49,7 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
     """)
     List<TicketEntity> findByCreatedById(@Param("userId") Long userId);
 
+
     long countByAssignedToIdAndStatusIn(Long executiveId, List<String> statuses);
 
     long countByAssignedToId(Long executiveId);
@@ -83,6 +85,7 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
             @Param("executiveId") Long executiveId,
             @Param("statuses") List<String> statuses);
 
+
     @Query("""
         SELECT t FROM TicketEntity t
         LEFT JOIN FETCH t.assignedTo
@@ -111,6 +114,7 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
     List<TicketEntity> findUnassignedOpenTicketsByDepartment(
             @Param("departmentName") String departmentName);
 
+
     @Query("""
         SELECT t FROM TicketEntity t
         WHERE t.status = 'CLOSED'
@@ -119,7 +123,28 @@ public interface TicketRepository extends JpaRepository<TicketEntity, Long> {
     """)
     List<TicketEntity> findStaleClosedTickets(@Param("cutoff") LocalDateTime cutoff);
 
+
     long countByCreatedById(Long userId);
+
     long countByStatus(String status);
+
     long countBySlaStatus(String slaStatus);
+
+
+    @Query("""
+        SELECT UPPER(t.priority), COUNT(t)
+        FROM TicketEntity t
+        WHERE t.priority IS NOT NULL
+        GROUP BY UPPER(t.priority)
+    """)
+    List<Object[]> countGroupedByPriority();
+
+
+    @Query("""
+        SELECT UPPER(t.status), COUNT(t)
+        FROM TicketEntity t
+        WHERE t.status IS NOT NULL
+        GROUP BY UPPER(t.status)
+    """)
+    List<Object[]> countGroupedByStatus();
 }

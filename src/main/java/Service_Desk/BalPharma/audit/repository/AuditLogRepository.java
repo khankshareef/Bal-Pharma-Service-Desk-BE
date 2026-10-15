@@ -11,5 +11,5 @@ public interface AuditLogRepository extends JpaRepository<AuditLogEntity, Long> 
 
     List<AuditLogEntity> findByTypeOrderByCreatedAtDesc(String type);
 
-    List<AuditLogEntity> findByUnitOrderByCreatedAtDesc(String unit);
+    List<AuditLogEntity> findByUnitCodeOrderByCreatedAtDesc(String unitCode);
 }

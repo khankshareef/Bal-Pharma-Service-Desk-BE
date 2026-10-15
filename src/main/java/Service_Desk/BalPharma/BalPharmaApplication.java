@@ -9,5 +9,4 @@ public class BalPharmaApplication {
 	public static void main(String[] args) {
 		SpringApplication.run(BalPharmaApplication.class, args);
 	}
-
 }

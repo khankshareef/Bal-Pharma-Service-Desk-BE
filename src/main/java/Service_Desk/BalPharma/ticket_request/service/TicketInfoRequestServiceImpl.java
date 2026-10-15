@@ -1,5 +1,6 @@
 package Service_Desk.BalPharma.ticket_request.service;
 
+import Service_Desk.BalPharma.audit.service.AuditLogService;
 import Service_Desk.BalPharma.auth.entity.AuthEntity;
 import Service_Desk.BalPharma.auth.repository.AuthRepository;
 import Service_Desk.BalPharma.exception.AuthException;
@@ -27,6 +28,7 @@ public class TicketInfoRequestServiceImpl implements TicketInfoRequestService {
     private final TicketRepository ticketRepository;
     private final AuthRepository authRepository;
     private final NotificationService notificationService;
+    private final AuditLogService auditLogService;
 
     @Override
     public TicketInfoRequestResponseDto create(CreateTicketInfoRequestDto dto, String employeeId) {
@@ -54,6 +56,14 @@ public class TicketInfoRequestServiceImpl implements TicketInfoRequestService {
         req.setRespondedAt(null);
 
         TicketInfoRequestEntity saved = requestRepository.save(req);
+
+        auditLogService.recordForTicket(
+                requester,
+                ticket,
+                "Info Requested",
+                "User",
+                "Info requested on " + ticket.getTicketCode()
+        );
 
         if (ticket.getCreatedBy() != null) {
             notificationService.notifyUser(
@@ -140,6 +150,14 @@ public class TicketInfoRequestServiceImpl implements TicketInfoRequestService {
 
         TicketInfoRequestEntity saved = requestRepository.save(req);
 
+        auditLogService.recordForTicket(
+                responder,
+                saved.getTicket(),
+                "Info Responded",
+                "User",
+                "Responded to info request on " + saved.getTicket().getTicketCode()
+        );
+
         if (saved.getRequestedBy() != null) {
             notificationService.notifyUser(
                     saved.getRequestedBy().getId(),
@@ -164,13 +182,42 @@ public class TicketInfoRequestServiceImpl implements TicketInfoRequestService {
             throw new AuthException("Cannot close a request with status: " + req.getStatus());
 
         req.setStatus("CLOSED");
-        return TicketInfoRequestResponseDto.from(requestRepository.save(req));
+        TicketInfoRequestEntity saved = requestRepository.save(req);
+
+        AuthEntity actor = null;
+        if (employeeId != null) {
+            actor = authRepository.findByEmployeeId(employeeId).orElse(null);
+        }
+
+        auditLogService.recordForTicket(
+                actor,
+                saved.getTicket(),
+                "Info Request Closed",
+                "System",
+                "Closed info request #" + saved.getId()
+                        + " on " + saved.getTicket().getTicketCode()
+        );
+
+        return TicketInfoRequestResponseDto.from(saved);
     }
 
     @Override
     public void delete(Long id) {
-        if (!requestRepository.existsById(id))
-            throw new AuthException("Request not found: " + id);
+        TicketInfoRequestEntity req = requestRepository.findByIdWithRelations(id)
+                .orElseThrow(() -> new AuthException("Request not found: " + id));
+
+        Long reqId = req.getId();
+        TicketEntity ticket = req.getTicket();
+
         requestRepository.deleteById(id);
+
+        auditLogService.recordForTicket(
+                null,
+                ticket,
+                "Info Request Deleted",
+                "Admin",
+                "Deleted info request #" + reqId
+                        + (ticket != null ? " on " + ticket.getTicketCode() : "")
+        );
     }
 }

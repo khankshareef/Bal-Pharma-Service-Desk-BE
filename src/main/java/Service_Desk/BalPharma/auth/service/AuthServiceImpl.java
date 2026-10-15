@@ -1,4 +1,6 @@
 package Service_Desk.BalPharma.auth.service;
+
+import Service_Desk.BalPharma.audit.service.AuditLogService;
 import Service_Desk.BalPharma.auth.dto.AuthDto;
 import Service_Desk.BalPharma.auth.dto.ChangePasswordDto;
 import Service_Desk.BalPharma.auth.dto.LoginResponseDto;
@@ -14,6 +16,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+
 import java.time.LocalDateTime;
 import java.time.temporal.ChronoUnit;
 import java.util.HashSet;
@@ -30,12 +33,12 @@ public class AuthServiceImpl implements AuthService {
     private final UserRoleUnitRepository userRoleUnitRepository;
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
+    private final AuditLogService auditLogService;
 
     private static final Role[] ROLE_HIERARCHY = {
             Role.SUPER_MANAGER, Role.ADMIN, Role.DEPUTY_MANAGER,
             Role.EXECUTIVE, Role.EMPLOYEE,
     };
-
 
     @Override
     public LoginResponseDto login(AuthDto authDto, String clientIp) {
@@ -88,6 +91,16 @@ public class AuthServiceImpl implements AuthService {
 
         String token = jwtService.issue(user, activeRole);
 
+        // ---------- AUDIT: LOGIN ----------
+        auditLogService.record(
+                user.getName() + " (" + shortRole(activeRole) + ")",
+                "Login",
+                "Security",
+                user.getPrimaryLocation() != null ? user.getPrimaryLocation() : "All",
+                user.getPrimaryLocation(),
+                "Logged in as " + activeRole.name()
+        );
+
         LoginResponseDto response = buildProfileResponse(user, activeRole);
         response.setToken(token);
         response.setMessage(
@@ -96,7 +109,6 @@ public class AuthServiceImpl implements AuthService {
                         : "Login successful.");
         return response;
     }
-
 
     @Override
     public void changePassword(ChangePasswordDto dto) {
@@ -112,8 +124,16 @@ public class AuthServiceImpl implements AuthService {
         user.setPassword(passwordEncoder.encode(dto.getNewPassword()));
         user.setFirstTimeLogin(false);
         authRepository.save(user);
-    }
 
+        auditLogService.record(
+                user.getName(),
+                "Password Changed",
+                "Security",
+                user.getPrimaryLocation() != null ? user.getPrimaryLocation() : "All",
+                user.getPrimaryLocation(),
+                "User changed own password"
+        );
+    }
 
     @Override
     @Transactional(readOnly = true)
@@ -132,7 +152,6 @@ public class AuthServiceImpl implements AuthService {
                 ? List.of()
                 : user.getRoles().stream().map(Enum::name).toList();
     }
-
 
     private LoginResponseDto buildProfileResponse(AuthEntity user, Role activeRole) {
 
@@ -194,7 +213,6 @@ public class AuthServiceImpl implements AuthService {
         return r;
     }
 
-
     private Role resolveActiveRole(String requestedRole, AuthEntity user) {
         if (user.getRoles() == null || user.getRoles().isEmpty())
             throw new AuthException("No role assigned to this user");
@@ -252,7 +270,6 @@ public class AuthServiceImpl implements AuthService {
         return all;
     }
 
-
     private boolean isInsideUnit(UnitAssignment u, double lat, double lng) {
         if (u.getLatitude() == null || u.getLongitude() == null) return false;
         double dist = haversineMeters(lat, lng, u.getLatitude(), u.getLongitude());
@@ -278,6 +295,10 @@ public class AuthServiceImpl implements AuthService {
         return null;
     }
 
+
+    /* ===============================================================
+     *  HELPERS — FORMATTING
+     * ============================================================= */
     private String prettyRole(Role r) {
         if (r == null) return null;
         String[] parts = r.name().split("_");
@@ -297,5 +318,16 @@ public class AuthServiceImpl implements AuthService {
         if (parts.length == 1)
             return parts[0].substring(0, 1).toUpperCase();
         return ("" + parts[0].charAt(0) + parts[parts.length - 1].charAt(0)).toUpperCase();
+    }
+
+    private String shortRole(Role r) {
+        if (r == null) return "?";
+        return switch (r) {
+            case SUPER_MANAGER  -> "SM";
+            case DEPUTY_MANAGER -> "DM";
+            case EXECUTIVE      -> "EX";
+            case EMPLOYEE       -> "EMP";
+            case ADMIN          -> "ADMIN";
+        };
     }
 }

@@ -1,5 +1,6 @@
 package Service_Desk.BalPharma.super_manager.service;
 
+import Service_Desk.BalPharma.audit.service.AuditLogService;
 import Service_Desk.BalPharma.auth.entity.AuthEntity;
 import Service_Desk.BalPharma.auth.entity.UnitAssignment;
 import Service_Desk.BalPharma.auth.entity.UserRoleUnit;
@@ -29,12 +30,12 @@ public class SuperManagerServiceImpl implements SuperManagerService {
     private final UnitRepository unitRepository;
     private final UserRoleUnitRepository userRoleUnitRepository;
     private final PasswordEncoder passwordEncoder;
+    private final AuditLogService auditLogService;
 
     private static final Role[] ROLE_HIERARCHY = {
             Role.SUPER_MANAGER, Role.ADMIN, Role.DEPUTY_MANAGER,
             Role.EXECUTIVE, Role.EMPLOYEE,
     };
-
 
     @Override
     public UserResponseDto createUser(CreateUserDto dto) {
@@ -80,9 +81,17 @@ public class SuperManagerServiceImpl implements SuperManagerService {
 
         saveRoleUnits(saved, dto.getRoleUnits());
 
+        auditLogService.record(
+                saved.getName() + " (" + shortRole(saved) + ")",
+                "User Created",
+                "User",
+                saved.getPrimaryLocation() != null ? saved.getPrimaryLocation() : "All",
+                saved.getPrimaryLocation(),
+                "Created new user " + saved.getEmployeeId()
+        );
+
         return toResponse(saved);
     }
-
 
     @Override
     @Transactional(readOnly = true)
@@ -96,7 +105,6 @@ public class SuperManagerServiceImpl implements SuperManagerService {
         return toResponse(authRepository.findById(id)
                 .orElseThrow(() -> new AuthException("User not found with id: " + id)));
     }
-
 
     @Override
     public UserResponseDto updateUser(Long id, UpdateUserDto dto) {
@@ -147,6 +155,15 @@ public class SuperManagerServiceImpl implements SuperManagerService {
             saveRoleUnits(saved, dto.getRoleUnits());
         }
 
+        auditLogService.record(
+                saved.getName() + " (" + shortRole(saved) + ")",
+                "User Updated",
+                "User",
+                saved.getPrimaryLocation() != null ? saved.getPrimaryLocation() : "All",
+                saved.getPrimaryLocation(),
+                "Updated profile for " + saved.getEmployeeId()
+        );
+
         return toResponse(saved);
     }
 
@@ -165,7 +182,18 @@ public class SuperManagerServiceImpl implements SuperManagerService {
             }
         }
 
-        return toResponse(authRepository.save(user));
+        UserResponseDto response = toResponse(authRepository.save(user));
+
+        auditLogService.record(
+                user.getName() + " (" + shortRole(user) + ")",
+                "Locations Updated",
+                "Admin",
+                user.getPrimaryLocation() != null ? user.getPrimaryLocation() : "All",
+                user.getPrimaryLocation(),
+                "Locations updated for " + user.getEmployeeId()
+        );
+
+        return response;
     }
 
     @Override
@@ -177,20 +205,46 @@ public class SuperManagerServiceImpl implements SuperManagerService {
                 .orElseThrow(() -> new AuthException("User not found with id: " + id));
 
         user.setStatus(dto.getStatus());
-        return toResponse(authRepository.save(user));
+        UserResponseDto response = toResponse(authRepository.save(user));
+
+        auditLogService.record(
+                user.getName() + " (" + shortRole(user) + ")",
+                "User Status Updated",
+                "Admin",
+                user.getPrimaryLocation() != null ? user.getPrimaryLocation() : "All",
+                user.getPrimaryLocation(),
+                "Status set to " + user.getStatus() + " for " + user.getEmployeeId()
+        );
+
+        return response;
     }
-
-
-
 
     @Override
     public void deleteUser(Long id) {
-        if (!authRepository.existsById(id))
-            throw new AuthException("User not found with id: " + id);
+
+        AuthEntity user = authRepository.findById(id)
+                .orElseThrow(() -> new AuthException("User not found with id: " + id));
+
+        // capture before delete
+        String name = user.getName();
+        String empId = user.getEmployeeId();
+        String primaryLoc = user.getPrimaryLocation();
+        Role topRole = user.getRoles() == null || user.getRoles().isEmpty()
+                ? null : pickHighestPrivilegeRole(user.getRoles());
 
         userRoleUnitRepository.deleteByUserId(id);
         authRepository.deleteById(id);
+
+        auditLogService.record(
+                name + " (" + (topRole != null ? shortRole(topRole) : "?") + ")",
+                "User Deleted",
+                "Admin",
+                primaryLoc != null ? primaryLoc : "All",
+                primaryLoc,
+                "Deleted user " + empId
+        );
     }
+
 
     @Override
     public String resetPassword(Long id, AuthEntity performedBy) {
@@ -205,9 +259,21 @@ public class SuperManagerServiceImpl implements SuperManagerService {
         user.setResetBy(performedBy);
         authRepository.save(user);
 
+        String actorLabel = performedBy != null
+                ? performedBy.getName() + " (" + shortRole(performedBy) + ")"
+                : user.getName() + " (" + shortRole(user) + ")";
+
+        auditLogService.record(
+                actorLabel,
+                "Password Reset",
+                "Security",
+                user.getPrimaryLocation() != null ? user.getPrimaryLocation() : "All",
+                user.getPrimaryLocation(),
+                "Reset password for " + user.getEmployeeId()
+        );
+
         return temp;
     }
-
 
     @Override
     @Transactional(readOnly = true)
@@ -217,6 +283,7 @@ public class SuperManagerServiceImpl implements SuperManagerService {
         long inactive = total - active;
         return new UserStatsDto(total, active, inactive, 0, 0, 0, 0, 0);
     }
+
 
     private void saveRoleUnits(AuthEntity user, Map<String, List<String>> map) {
 
@@ -247,7 +314,6 @@ public class SuperManagerServiceImpl implements SuperManagerService {
         return map;
     }
 
-
     private Set<Role> parseRoles(List<String> roleNames) {
         try {
             return roleNames.stream()
@@ -258,25 +324,6 @@ public class SuperManagerServiceImpl implements SuperManagerService {
         }
     }
 
-    private Role parsePrimary(String primary, Set<Role> roles) {
-        if (roles == null || roles.isEmpty())
-            throw new AuthException("At least one role is required");
-
-        Role p;
-        if (primary != null && !primary.isBlank()) {
-            try { p = Role.valueOf(primary.trim().toUpperCase()); }
-            catch (IllegalArgumentException e) {
-                throw new AuthException("Invalid primary role: " + primary);
-            }
-        } else {
-            p = pickHighestPrivilegeRole(roles);
-        }
-
-        if (!roles.contains(p))
-            throw new AuthException("Primary role must be among assigned roles");
-        return p;
-    }
-
     private Role pickHighestPrivilegeRole(Set<Role> roles) {
         for (Role r : ROLE_HIERARCHY) {
             if (roles.contains(r)) return r;
@@ -284,6 +331,22 @@ public class SuperManagerServiceImpl implements SuperManagerService {
         return roles.stream()
                 .min((a, b) -> a.name().compareTo(b.name()))
                 .orElseThrow(() -> new AuthException("No role assigned"));
+    }
+
+    private String shortRole(AuthEntity u) {
+        if (u == null || u.getRoles() == null || u.getRoles().isEmpty()) return "?";
+        return shortRole(pickHighestPrivilegeRole(u.getRoles()));
+    }
+
+    private String shortRole(Role r) {
+        if (r == null) return "?";
+        return switch (r) {
+            case SUPER_MANAGER  -> "SM";
+            case DEPUTY_MANAGER -> "DM";
+            case EXECUTIVE      -> "EX";
+            case EMPLOYEE       -> "EMP";
+            case ADMIN          -> "ADMIN";
+        };
     }
 
     private UnitAssignment buildAssignment(UnitAssignmentDto u) {
@@ -303,7 +366,6 @@ public class SuperManagerServiceImpl implements SuperManagerService {
     private String nonBlank(String a, String b) {
         return (a != null && !a.isBlank()) ? a : b;
     }
-
 
     private UserResponseDto toResponse(AuthEntity e) {
         UserResponseDto r = new UserResponseDto();

@@ -1,4 +1,6 @@
 package Service_Desk.BalPharma.ticket.service;
+
+import Service_Desk.BalPharma.audit.service.AuditLogService;
 import Service_Desk.BalPharma.auth.entity.AuthEntity;
 import Service_Desk.BalPharma.auth.repository.AuthRepository;
 import Service_Desk.BalPharma.category.entity.CategoryEntity;
@@ -10,6 +12,8 @@ import Service_Desk.BalPharma.department.repository.DepartmentRepository;
 import Service_Desk.BalPharma.exception.AuthException;
 import Service_Desk.BalPharma.location.Role;
 import Service_Desk.BalPharma.notification.service.NotificationService;
+import Service_Desk.BalPharma.reopen.dto.CreateReopenDto;
+import Service_Desk.BalPharma.reopen.dto.TicketReopenResponseDto;
 import Service_Desk.BalPharma.reopen.entity.TicketReopenEntity;
 import Service_Desk.BalPharma.reopen.repository.TicketReopenRepository;
 import Service_Desk.BalPharma.socket.SocketHandlers;
@@ -21,10 +25,6 @@ import Service_Desk.BalPharma.ticket.repository.TicketRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
-import Service_Desk.BalPharma.reopen.dto.CreateReopenDto;
-import Service_Desk.BalPharma.reopen.dto.TicketReopenResponseDto;
-import Service_Desk.BalPharma.location.Role;
-
 
 import java.time.Duration;
 import java.time.Instant;
@@ -53,6 +53,7 @@ public class TicketServiceImpl implements TicketService {
     private final NotificationService notificationService;
     private final ExecutiveAssignmentService assignmentService;
     private final SocketHandlers socketHandlers;
+    private final AuditLogService auditLogService;
 
     @Override
     public TicketResponseDto create(CreateTicketDto dto, String employeeId) {
@@ -109,6 +110,14 @@ public class TicketServiceImpl implements TicketService {
 
         TicketEntity saved = ticketRepository.save(t);
 
+        auditLogService.recordForTicket(
+                creator,
+                saved,
+                "Ticket Created",
+                "User",
+                "Created " + saved.getTicketCode() + " — " + saved.getSubject()
+        );
+
         Set<Long> recipientIds = new HashSet<>();
         if (saved.getAssignedTo() != null) {
             recipientIds.add(saved.getAssignedTo().getId());
@@ -149,7 +158,6 @@ public class TicketServiceImpl implements TicketService {
                 ticketRepository.findByIdWithRelations(saved.getId()).orElse(saved)
         );
     }
-
 
     @Override
     public List<TicketResponseDto> getAll() {
@@ -215,6 +223,14 @@ public class TicketServiceImpl implements TicketService {
         if (dto.getAttachmentNames() != null) t.setAttachmentNames(dto.getAttachmentNames());
 
         TicketEntity saved = ticketRepository.save(t);
+
+        auditLogService.recordForTicket(
+                saved.getCreatedBy(),
+                saved,
+                "Ticket Updated",
+                "User",
+                "Updated " + saved.getTicketCode()
+        );
 
         List<Long> execIds = resolveExecutivesForDepartment(
                 saved.getDepartment() != null ? saved.getDepartment().getName() : null);
@@ -358,6 +374,14 @@ public class TicketServiceImpl implements TicketService {
 
         TicketEntity saved = ticketRepository.save(t);
 
+        auditLogService.recordForTicket(
+                actor,
+                saved,
+                "Ticket Status Changed",
+                "System",
+                saved.getTicketCode() + " → " + saved.getStatus()
+        );
+
         return toResponse(
                 ticketRepository.findByIdWithRelations(saved.getId()).orElse(saved)
         );
@@ -398,6 +422,14 @@ public class TicketServiceImpl implements TicketService {
         t.setSlaStatus("ON_TRACK");
 
         TicketEntity saved = ticketRepository.save(t);
+
+        auditLogService.recordForTicket(
+                assigner,
+                saved,
+                "Ticket Assigned",
+                "User",
+                saved.getTicketCode() + " assigned to " + assigned.getEmployeeId()
+        );
 
         notificationService.notifyUser(
                 assigned.getId(),
@@ -496,6 +528,14 @@ public class TicketServiceImpl implements TicketService {
 
         TicketReopenEntity saved = reopenRepository.save(r);
 
+        auditLogService.recordForTicket(
+                requester,
+                t,
+                "Ticket Reopen Requested",
+                "User",
+                "Reopen requested for " + t.getTicketCode() + ": " + dto.getReason()
+        );
+
         List<Long> execIds = resolveExecutivesForDepartment(
                 t.getDepartment() != null ? t.getDepartment().getName() : null);
 
@@ -538,7 +578,6 @@ public class TicketServiceImpl implements TicketService {
                 .toList();
     }
 
-
     @Override
     public List<TicketResponseDto> getUnassignedOpenTicketsForCaller(String employeeId) {
 
@@ -565,9 +604,20 @@ public class TicketServiceImpl implements TicketService {
 
     @Override
     public void delete(Long id) {
-        if (!ticketRepository.existsById(id))
-            throw new AuthException("Ticket not found: " + id);
+        TicketEntity t = ticketRepository.findByIdWithRelations(id)
+                .orElseThrow(() -> new AuthException("Ticket not found: " + id));
+
+        String code = t.getTicketCode();
+
         ticketRepository.deleteById(id);
+
+        auditLogService.recordForTicket(
+                null,
+                t,
+                "Ticket Deleted",
+                "Admin",
+                "Deleted " + code
+        );
     }
 
     @Override
